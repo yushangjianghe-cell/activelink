@@ -26,5 +26,9 @@ export declare class ProactiveTrigger {
     private isInSleepTime;
     private checkAndTrigger;
     private checkChatLuna;
+    forceTriggerOnce(): Promise<{
+        success: number;
+        failed: number;
+    }>;
 }
 //# sourceMappingURL=proactive.d.ts.map

@@ -29,74 +29,92 @@ export class ChatExecutor {
     room: ConversationRoom
   ): Promise<boolean> {
     const logger = this.ctx.logger('activelink')
+    const maxRetries = 6
 
-    try {
-      logger.debug(`Executing chat for room [${room.roomName}]`)
-
-      const triggerMessage = buildTriggerMessage(this.config.triggerTemplate, content)
-      const events = this.createChatEvents()
-
-      let session = null
-      let selectedBot = null
-
-      for (const bot of this.ctx.bots) {
-        try {
-          const isGroup = channelId.includes(':') && !channelId.startsWith('private:')
-
-          session = bot.session({
-            type: 'message',
-            timestamp: Date.now(),
-            selfId: bot.selfId,
-            user: { id: userId },
-            channel: { id: channelId, type: 0 },
-            guild: isGroup ? { id: channelId.split(':')[0] } : undefined,
-            content: triggerMessage
-          } as any)
-
-          selectedBot = bot
-          logger.debug(`Using bot: ${bot.platform}`)
-          break
-        } catch (err) {
-          logger.debug(`Bot ${bot.platform} failed to create session`)
-          continue
-        }
-      }
-
-      if (!session || !selectedBot) {
-        logger.error('No valid bot/session available')
-        return false
-      }
-
-      const response = await this.ctx.chatluna.chat(
-        session,
-        room,
-        {
-          content: triggerMessage,
-          role: 'system'
-        },
-        events,
-        false,
-        {},
-        undefined,
-        randomUUID()
-      )
-
-      let rawContent = response.content as string
-      const finalText = this.removeActionTags(rawContent)
-
-      if (!finalText || !finalText.trim()) {
-        logger.warn('Empty response')
-        return false
-      }
-
-      await session.send(finalText)
-      logger.debug(`Sent to [${room.roomName}]`)
-
-      return true
-    } catch (err) {
-      logger.error('Chat execution failed:', err)
+    if (!room.model) {
+      logger.error(`Room [${room.roomName}] has no model configured`)
       return false
     }
+
+    const triggerMessage = buildTriggerMessage(this.config.triggerTemplate, content)
+
+    let session = null
+    let selectedBot = null
+
+    for (const bot of this.ctx.bots) {
+      try {
+        const isGroup = channelId.includes(':') && !channelId.startsWith('private:')
+
+        session = bot.session({
+          type: 'message',
+          timestamp: Date.now(),
+          selfId: bot.selfId,
+          user: { id: userId },
+          channel: { id: channelId, type: 0 },
+          guild: isGroup ? { id: channelId.split(':')[0] } : undefined,
+          content: triggerMessage
+        } as any)
+
+        selectedBot = bot
+        logger.debug(`Using bot: ${bot.platform}`)
+        break
+      } catch (err) {
+        logger.debug(`Bot ${bot.platform} failed to create session`)
+        continue
+      }
+    }
+
+    if (!session || !selectedBot) {
+      logger.error('No valid bot/session available')
+      return false
+    }
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.debug(`[Attempt ${attempt}/${maxRetries}] Executing chat for room [${room.roomName}], model: ${room.model}`)
+
+        const events = this.createChatEvents()
+
+        const response = await this.ctx.chatluna.chat(
+          session,
+          room,
+          {
+            content: triggerMessage,
+            role: 'system'
+          },
+          events,
+          false,
+          {},
+          undefined,
+          randomUUID()
+        )
+
+        let rawContent = response.content as string
+        const finalText = this.removeActionTags(rawContent)
+
+        if (!finalText || !finalText.trim()) {
+          logger.warn(`[Attempt ${attempt}/${maxRetries}] Empty response`)
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            continue
+          }
+          return false
+        }
+
+        await session.send(finalText)
+        logger.debug(`Sent to [${room.roomName}]`)
+
+        return true
+      } catch (err) {
+        logger.error(`[Attempt ${attempt}/${maxRetries}] Chat execution failed:`, err instanceof Error ? err.message : String(err))
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+      }
+    }
+
+    logger.error(`Chat execution failed after ${maxRetries} attempts`)
+    return false
   }
 
   async executeProactive(
@@ -106,55 +124,74 @@ export class ChatExecutor {
     historyText?: string
   ): Promise<boolean> {
     const logger = this.ctx.logger('activelink')
+    const maxRetries = 6
 
-    try {
-      const room = await getUserRoom(this.ctx, target.userId || 'system', target.channelId)
-      if (!room) {
-        logger.warn(`No room found for proactive message`)
-        return false
-      }
-
-      const vars = await this.buildTemplateVars(target, trigger, historyText || '')
-      const prompt = this.renderTemplate(template, vars)
-
-      const session = this.adapterManager.createSession(target, prompt)
-      if (!session) {
-        logger.error('Failed to create session for proactive message')
-        return false
-      }
-
-      const events = this.createChatEvents()
-
-      const response = await this.ctx.chatluna.chat(
-        session,
-        room,
-        {
-          content: prompt,
-          role: 'system'
-        },
-        events,
-        false,
-        {},
-        undefined,
-        randomUUID()
-      )
-
-      let rawContent = response.content as string
-      const finalText = this.removeActionTags(rawContent)
-
-      if (!finalText || !finalText.trim()) {
-        logger.warn('Empty response for proactive message')
-        return false
-      }
-
-      await session.send(finalText)
-      logger.debug(`Proactive message sent`)
-
-      return true
-    } catch (err) {
-      logger.error('Proactive execution failed:', err)
+    const room = await getUserRoom(this.ctx, target.userId || 'system', target.channelId)
+    if (!room) {
+      logger.warn(`No room found for proactive message`)
       return false
     }
+
+    if (!room.model) {
+      logger.error(`Room [${room.roomName}] has no model configured`)
+      return false
+    }
+
+    const vars = await this.buildTemplateVars(target, trigger, historyText || '')
+    const prompt = this.renderTemplate(template, vars)
+
+    const session = this.adapterManager.createSession(target, prompt)
+    if (!session) {
+      logger.error('Failed to create session for proactive message')
+      return false
+    }
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.debug(`[Attempt ${attempt}/${maxRetries}] ExecuteProactive for room [${room.roomName}], model: ${room.model}`)
+
+        const events = this.createChatEvents()
+
+        const response = await this.ctx.chatluna.chat(
+          session,
+          room,
+          {
+            content: prompt,
+            role: 'system'
+          },
+          events,
+          false,
+          {},
+          undefined,
+          randomUUID()
+        )
+
+        let rawContent = response.content as string
+        const finalText = this.removeActionTags(rawContent)
+
+        if (!finalText || !finalText.trim()) {
+          logger.warn(`[Attempt ${attempt}/${maxRetries}] Empty response for proactive message`)
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            continue
+          }
+          return false
+        }
+
+        await session.send(finalText)
+        logger.debug(`Proactive message sent`)
+
+        return true
+      } catch (err) {
+        logger.error(`[Attempt ${attempt}/${maxRetries}] Proactive execution failed:`, err instanceof Error ? err.message : String(err))
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+      }
+    }
+
+    logger.error(`Proactive execution failed after ${maxRetries} attempts`)
+    return false
   }
 
   private createChatEvents() {
