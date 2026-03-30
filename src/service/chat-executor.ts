@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { ActiveLinkTask, ConversationRoom, MessageTarget, TriggerReason } from '../types'
 import { AdapterManager } from '../adapters'
 import { getUserRoom } from '../utils/room'
-import { buildTriggerMessage } from '../utils/shared'
+import { buildTriggerMessage, getGuildIdFromChannelId, isGroupChannel } from '../utils/shared'
 
 export class ChatExecutor {
   private adapterManager: AdapterManager
@@ -43,15 +43,16 @@ export class ChatExecutor {
 
     for (const bot of this.ctx.bots) {
       try {
-        const isGroup = channelId.includes(':') && !channelId.startsWith('private:')
+        const isGroup = isGroupChannel(channelId)
+        const guildId = getGuildIdFromChannelId(channelId)
 
         session = bot.session({
           type: 'message',
           timestamp: Date.now(),
           selfId: bot.selfId,
           user: { id: userId },
-          channel: { id: channelId, type: 0 },
-          guild: isGroup ? { id: channelId.split(':')[0] } : undefined,
+          channel: { id: channelId, type: isGroup ? 0 : 1 },
+          guild: isGroup ? { id: guildId } : undefined,
           content: triggerMessage
         } as any)
 

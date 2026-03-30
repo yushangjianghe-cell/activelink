@@ -169,20 +169,38 @@ export class ProactiveTrigger {
     }
   }
 
-  async forceTriggerOnce(): Promise<{ success: number; failed: number }> {
+  async forceTriggerOnce(targetChannelId?: string): Promise<{ success: number; failed: number }> {
     const logger = this.ctx.logger('activelink')
     let success = 0
     let failed = 0
+    const isTargeted = !!targetChannelId
 
     try {
       const rooms = await getAllRooms(this.ctx)
-      logger.info(`[Proactive] Force trigger: processing ${rooms.length} rooms`)
+      const targetRooms = targetChannelId
+        ? rooms.filter(room => room.channelId === targetChannelId)
+        : rooms
 
-      for (const roomInfo of rooms) {
+      if (isTargeted) {
+        logger.info(`[Proactive] Force trigger: processing ${targetRooms.length} room(s) for [${targetChannelId}]`)
+      } else {
+        logger.info(`[Proactive] Force trigger: processing ${targetRooms.length} rooms`)
+      }
+
+      if (isTargeted && targetRooms.length === 0) {
+        logger.warn(`[Proactive] Force trigger: room [${targetChannelId}] not found`)
+        return { success: 0, failed: 1 }
+      }
+
+      for (const roomInfo of targetRooms) {
         try {
           const channelId = roomInfo.channelId
 
           if (!isInScope(channelId, this.scope)) {
+            logger.debug(`[Proactive] Force trigger: room [${channelId}] not in scope, skipping`)
+            if (isTargeted) {
+              failed++
+            }
             continue
           }
 

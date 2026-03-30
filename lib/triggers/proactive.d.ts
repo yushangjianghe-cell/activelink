@@ -26,7 +26,7 @@ export declare class ProactiveTrigger {
     private isInSleepTime;
     private checkAndTrigger;
     private checkChatLuna;
-    forceTriggerOnce(): Promise<{
+    forceTriggerOnce(targetChannelId?: string): Promise<{
         success: number;
         failed: number;
     }>;
