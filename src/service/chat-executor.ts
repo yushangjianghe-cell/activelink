@@ -7,9 +7,34 @@ import { buildTriggerMessage, getGuildIdFromChannelId, isGroupChannel } from '..
 
 export class ChatExecutor {
   private adapterManager: AdapterManager
+  private sessionCache: Map<string, Session> = new Map()
 
   constructor(private ctx: Context, private config: any) {
     this.adapterManager = new AdapterManager(ctx)
+
+    this.ctx.on('message', (session) => {
+      if (this.ctx.bots[session.uid]) return
+
+      const channelId = session.channelId || ''
+      const guildId = session.guildId || ''
+      const userId = session.userId || ''
+
+      if (channelId) {
+        this.sessionCache.set(channelId, session)
+      }
+
+      if (guildId) {
+        this.sessionCache.set(guildId, session)
+      }
+
+      if (session.isDirect && userId) {
+        const privateChannelId = channelId?.startsWith('private:')
+          ? channelId
+          : `private:${userId}`
+        this.sessionCache.set(privateChannelId, session)
+        this.sessionCache.set(userId, session)
+      }
+    })
   }
 
   async executeTask(task: ActiveLinkTask): Promise<boolean> {
@@ -38,30 +63,39 @@ export class ChatExecutor {
 
     const triggerMessage = buildTriggerMessage(this.config.triggerTemplate, content)
 
-    let session = null
-    let selectedBot = null
+    let session: Session | null = null
+    let selectedBot: any = null
 
-    for (const bot of this.ctx.bots) {
-      try {
-        const isGroup = isGroupChannel(channelId)
-        const guildId = getGuildIdFromChannelId(channelId)
+    const cachedSession = this.getCachedSession(channelId, userId)
+    if (cachedSession) {
+      session = cachedSession
+      selectedBot = cachedSession.bot
+      session.timestamp = Date.now()
+      session.content = triggerMessage
+      logger.debug(`Using cached session for channel: ${channelId}`)
+    } else {
+      for (const bot of this.ctx.bots) {
+        try {
+          const isGroup = isGroupChannel(channelId)
+          const guildId = getGuildIdFromChannelId(channelId)
 
-        session = bot.session({
-          type: 'message',
-          timestamp: Date.now(),
-          selfId: bot.selfId,
-          user: { id: userId },
-          channel: { id: channelId, type: isGroup ? 0 : 1 },
-          guild: isGroup ? { id: guildId } : undefined,
-          content: triggerMessage
-        } as any)
+          session = bot.session({
+            type: 'message',
+            timestamp: Date.now(),
+            selfId: bot.selfId,
+            user: { id: userId },
+            channel: { id: channelId, type: isGroup ? 0 : 1 },
+            guild: isGroup ? { id: guildId } : undefined,
+            content: triggerMessage
+          } as any)
 
-        selectedBot = bot
-        logger.debug(`Using bot: ${bot.platform}`)
-        break
-      } catch (err) {
-        logger.debug(`Bot ${bot.platform} failed to create session`)
-        continue
+          selectedBot = bot
+          logger.debug(`Using bot: ${bot.platform}`)
+          break
+        } catch (err) {
+          logger.debug(`Bot ${bot.platform} failed to create session`)
+          continue
+        }
       }
     }
 
@@ -141,7 +175,14 @@ export class ChatExecutor {
     const vars = await this.buildTemplateVars(target, trigger, historyText || '')
     const prompt = this.renderTemplate(template, vars)
 
-    const session = this.adapterManager.createSession(target, prompt)
+    let session = this.getCachedSession(target.channelId, target.userId)
+    if (session) {
+      session.timestamp = Date.now()
+      session.content = prompt
+    } else {
+      session = this.adapterManager.createSession(target, prompt)
+    }
+
     if (!session) {
       logger.error('Failed to create session for proactive message')
       return false
@@ -248,5 +289,26 @@ export class ChatExecutor {
     const d = String(date.getDate()).padStart(2, '0')
     const w = weekdayMap[date.getDay()]
     return `${y}-${m}-${d} ${w}`
+  }
+
+  private getCachedSession(channelId: string, userId?: string): Session | null {
+    if (channelId && this.sessionCache.has(channelId)) {
+      return this.sessionCache.get(channelId) || null
+    }
+
+    if (userId && this.sessionCache.has(userId)) {
+      return this.sessionCache.get(userId) || null
+    }
+
+    if (userId) {
+      const privateChannelId = channelId?.startsWith('private:')
+        ? channelId
+        : `private:${userId}`
+      if (this.sessionCache.has(privateChannelId)) {
+        return this.sessionCache.get(privateChannelId) || null
+      }
+    }
+
+    return null
   }
 }
