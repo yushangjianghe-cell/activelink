@@ -4,6 +4,7 @@ export declare class ChatExecutor {
     private ctx;
     private config;
     private adapterManager;
+    private sessionCache;
     constructor(ctx: Context, config: any);
     executeTask(task: ActiveLinkTask): Promise<boolean>;
     executeWithRoom(userId: string, channelId: string, content: string, room: ConversationRoom): Promise<boolean>;
@@ -13,5 +14,6 @@ export declare class ChatExecutor {
     private buildTemplateVars;
     private renderTemplate;
     private formatDate;
+    private getCachedSession;
 }
 //# sourceMappingURL=chat-executor.d.ts.map

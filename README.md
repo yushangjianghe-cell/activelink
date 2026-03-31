@@ -22,6 +22,7 @@ npm install koishi-plugin-activelink
 ### 基础配置
 
 - `triggerTemplate`: 触发消息模板，`{content}` 会被替换为任务内容
+- `verboseLogging`: 启用详细调试日志输出
 
 ### 作用域配置
 

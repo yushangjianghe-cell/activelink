@@ -72,7 +72,7 @@ export class ChatExecutor {
       selectedBot = cachedSession.bot
       session.timestamp = Date.now()
       session.content = triggerMessage
-      logger.debug(`Using cached session for channel: ${channelId}`)
+      this.debug(logger, `Using cached session for channel: ${channelId}`)
     } else {
       for (const bot of this.ctx.bots) {
         try {
@@ -90,10 +90,10 @@ export class ChatExecutor {
           } as any)
 
           selectedBot = bot
-          logger.debug(`Using bot: ${bot.platform}`)
+          this.debug(logger, `Using bot: ${bot.platform}`)
           break
         } catch (err) {
-          logger.debug(`Bot ${bot.platform} failed to create session`)
+          this.debug(logger, `Bot ${bot.platform} failed to create session`)
           continue
         }
       }
@@ -106,7 +106,7 @@ export class ChatExecutor {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.debug(`[Attempt ${attempt}/${maxRetries}] Executing chat for room [${room.roomName}], model: ${room.model}`)
+        this.debug(logger, `[Attempt ${attempt}/${maxRetries}] Executing chat for room [${room.roomName}], model: ${room.model}`)
 
         const events = this.createChatEvents()
 
@@ -125,9 +125,10 @@ export class ChatExecutor {
         )
 
         let rawContent = response.content as string
-        const finalText = this.removeActionTags(rawContent)
+        const cleanedText = this.removeActionTags(rawContent)
+        const messages = this.extractMessages(cleanedText)
 
-        if (!finalText || !finalText.trim()) {
+        if (messages.length === 0) {
           logger.warn(`[Attempt ${attempt}/${maxRetries}] Empty response`)
           if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, 1000))
@@ -136,8 +137,8 @@ export class ChatExecutor {
           return false
         }
 
-        await session.send(finalText)
-        logger.debug(`Sent to [${room.roomName}]`)
+        await this.sendMessages(session, messages)
+        this.debug(logger, `Sent to [${room.roomName}] (${messages.length} message(s))`)
 
         return true
       } catch (err) {
@@ -190,7 +191,7 @@ export class ChatExecutor {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.debug(`[Attempt ${attempt}/${maxRetries}] ExecuteProactive for room [${room.roomName}], model: ${room.model}`)
+        this.debug(logger, `[Attempt ${attempt}/${maxRetries}] ExecuteProactive for room [${room.roomName}], model: ${room.model}`)
 
         const events = this.createChatEvents()
 
@@ -209,9 +210,10 @@ export class ChatExecutor {
         )
 
         let rawContent = response.content as string
-        const finalText = this.removeActionTags(rawContent)
+        const cleanedText = this.removeActionTags(rawContent)
+        const messages = this.extractMessages(cleanedText)
 
-        if (!finalText || !finalText.trim()) {
+        if (messages.length === 0) {
           logger.warn(`[Attempt ${attempt}/${maxRetries}] Empty response for proactive message`)
           if (attempt < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, 1000))
@@ -220,8 +222,8 @@ export class ChatExecutor {
           return false
         }
 
-        await session.send(finalText)
-        logger.debug(`Proactive message sent`)
+        await this.sendMessages(session, messages)
+        this.debug(logger, `Proactive message sent (${messages.length} message(s))`)
 
         return true
       } catch (err) {
@@ -242,21 +244,67 @@ export class ChatExecutor {
     return {
       'llm-new-token': async (token: string) => {},
       'llm-queue-waiting': async (queueLength: number) => {
-        logger.debug(`Waiting in queue, length: ${queueLength}`)
+        this.debug(logger, `Waiting in queue, length: ${queueLength}`)
       },
       'llm-calling-tool': async (toolName: string) => {
-        logger.debug(`Calling tool: ${toolName}`)
+        this.debug(logger, `Calling tool: ${toolName}`)
       },
       'llm-call-tool-end': async (result: any) => {},
       'llm-used-token-count': async (count: number) => {
-        logger.debug(`Used ${count} tokens`)
+        this.debug(logger, `Used ${count} tokens`)
       }
+    }
+  }
+
+  private debug(logger: any, message: string, ...args: any[]): void {
+    if (this.config?.verboseLogging) {
+      logger.debug(message, ...args)
     }
   }
 
   private removeActionTags(text: string): string {
     if (!text || typeof text !== 'string') return ''
-    return text.replace(/\[action\][\s\S]*?\[\/action\]/gi, '').trim()
+    return text
+      .replace(/\[action\][\s\S]*?\[\/action\]/gi, '')
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .trim()
+  }
+
+  private extractMessages(text: string): string[] {
+    if (!text || typeof text !== 'string') return []
+
+    const outputMatch = text.match(/<output[^>]*>([\s\S]*?)<\/output>/i)
+    const body = outputMatch ? outputMatch[1] : text
+
+    const messages: string[] = []
+    const messageRegex = /<message[^>]*>([\s\S]*?)<\/message>/gi
+    let match: RegExpExecArray | null
+
+    while ((match = messageRegex.exec(body)) !== null) {
+      const content = match[1].trim()
+      if (content) {
+        messages.push(content)
+      }
+    }
+
+    if (messages.length > 0) {
+      return messages
+    }
+
+    const fallback = (outputMatch ? body : text).trim()
+    return fallback ? [fallback] : []
+  }
+
+  private async sendMessages(session: Session, messages: string[]): Promise<void> {
+    const total = messages.length
+    for (const message of messages) {
+      const content = message.trim()
+      if (!content) continue
+      await session.send(content)
+      if (total > 1) {
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+    }
   }
 
   private async buildTemplateVars(

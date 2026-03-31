@@ -50,6 +50,9 @@ export const Config = Schema.object({
     .role('textarea')
     .default('[系统提示：现在是提醒时间，请根据以下内容主动向用户发起对话] {content}')
     .description('触发消息模板。{content} 会被替换为任务内容'),
+  verboseLogging: Schema.boolean()
+    .default(false)
+    .description('启用详细调试日志输出'),
   scope: Schema.object({
     mode: Schema.union(['全部启用', '白名单', '黑名单'])
       .default('全部启用')
@@ -257,6 +260,7 @@ export const Config = Schema.object({
 
 export interface Config {
   triggerTemplate: string
+  verboseLogging: boolean
   scope: {
     mode: '全部启用' | '白名单' | '黑名单'
     list: { type: '私聊' | '群聊'; id: string }[]
