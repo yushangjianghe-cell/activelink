@@ -18,23 +18,34 @@ export class ChatExecutor {
       const channelId = session.channelId || ''
       const guildId = session.guildId || ''
       const userId = session.userId || ''
+      const platform = session.platform || 'unknown'
 
       if (channelId) {
         this.sessionCache.set(channelId, session)
+        this.sessionCache.set(this.withPlatformKey(platform, channelId), session)
       }
 
       if (guildId) {
         this.sessionCache.set(guildId, session)
+        this.sessionCache.set(this.withPlatformKey(platform, guildId), session)
       }
 
       if (session.isDirect && userId) {
         const privateChannelId = channelId?.startsWith('private:')
           ? channelId
           : `private:${userId}`
+
         this.sessionCache.set(privateChannelId, session)
         this.sessionCache.set(userId, session)
+
+        this.sessionCache.set(this.withPlatformKey(platform, privateChannelId), session)
+        this.sessionCache.set(this.withPlatformKey(platform, userId), session)
       }
     })
+  }
+
+  resolvePreferredPlatform(channelId: string, userId?: string): string | undefined {
+    return this.inferPlatformFromChannel(channelId, userId)
   }
 
   async executeTask(task: ActiveLinkTask): Promise<boolean> {
@@ -44,14 +55,19 @@ export class ChatExecutor {
       return false
     }
 
-    return this.executeWithRoom(task.userId, task.channelId, task.content, room)
+    const preferredPlatform = typeof task.metadata?.platform === 'string'
+      ? task.metadata.platform
+      : undefined
+
+    return this.executeWithRoom(task.userId, task.channelId, task.content, room, preferredPlatform)
   }
 
   async executeWithRoom(
     userId: string,
     channelId: string,
     content: string,
-    room: ConversationRoom
+    room: ConversationRoom,
+    preferredPlatformHint?: string
   ): Promise<boolean> {
     const logger = this.ctx.logger('activelink')
     const maxRetries = 6
@@ -66,15 +82,25 @@ export class ChatExecutor {
     let session: Session | null = null
     let selectedBot: any = null
 
-    const cachedSession = this.getCachedSession(channelId, userId)
+    const strictPreferredPlatform = Boolean(preferredPlatformHint)
+    const preferredPlatform = preferredPlatformHint || this.inferPlatformFromChannel(channelId, userId)
+    const cachedSession = this.getCachedSession(
+      channelId,
+      userId,
+      preferredPlatform,
+      !strictPreferredPlatform
+    )
+
     if (cachedSession) {
       session = cachedSession
       selectedBot = cachedSession.bot
       session.timestamp = Date.now()
       session.content = triggerMessage
-      this.debug(logger, `Using cached session for channel: ${channelId}`)
+      this.debug(logger, `Using cached session for channel: ${channelId} (platform=${cachedSession.platform || 'unknown'})`)
     } else {
-      for (const bot of this.ctx.bots) {
+      const bots = this.getOrderedBots(preferredPlatform, strictPreferredPlatform)
+
+      for (const bot of bots) {
         try {
           const isGroup = isGroupChannel(channelId)
           const guildId = getGuildIdFromChannelId(channelId)
@@ -176,10 +202,18 @@ export class ChatExecutor {
     const vars = await this.buildTemplateVars(target, trigger, historyText || '')
     const prompt = this.renderTemplate(template, vars)
 
-    let session = this.getCachedSession(target.channelId, target.userId)
+    const preferredPlatform = target.adapter?.platform
+    let session = this.getCachedSession(
+      target.channelId,
+      target.userId,
+      preferredPlatform,
+      !preferredPlatform
+    )
+
     if (session) {
       session.timestamp = Date.now()
       session.content = prompt
+      this.debug(logger, `Using cached proactive session for channel: ${target.channelId} (platform=${session.platform || 'unknown'})`)
     } else {
       session = this.adapterManager.createSession(target, prompt)
     }
@@ -339,24 +373,99 @@ export class ChatExecutor {
     return `${y}-${m}-${d} ${w}`
   }
 
-  private getCachedSession(channelId: string, userId?: string): Session | null {
-    if (channelId && this.sessionCache.has(channelId)) {
-      return this.sessionCache.get(channelId) || null
-    }
+  private withPlatformKey(platform: string, key: string): string {
+    return `platform:${platform}|target:${key}`
+  }
 
-    if (userId && this.sessionCache.has(userId)) {
-      return this.sessionCache.get(userId) || null
-    }
+  private inferPlatformFromChannel(channelId: string, userId?: string): string | undefined {
+    const privateChannelId = userId
+      ? (channelId?.startsWith('private:') ? channelId : `private:${userId}`)
+      : undefined
 
-    if (userId) {
-      const privateChannelId = channelId?.startsWith('private:')
-        ? channelId
-        : `private:${userId}`
-      if (this.sessionCache.has(privateChannelId)) {
-        return this.sessionCache.get(privateChannelId) || null
+    const botPlatforms: string[] = []
+    for (const bot of this.ctx.bots) {
+      if (bot?.platform) {
+        botPlatforms.push(bot.platform)
       }
     }
 
-    return null
+    for (const platform of botPlatforms) {
+      if (channelId && this.sessionCache.has(this.withPlatformKey(platform, channelId))) {
+        return platform
+      }
+      if (userId && this.sessionCache.has(this.withPlatformKey(platform, userId))) {
+        return platform
+      }
+      if (privateChannelId && this.sessionCache.has(this.withPlatformKey(platform, privateChannelId))) {
+        return platform
+      }
+    }
+
+    const rawId = channelId?.startsWith('private:') ? channelId.slice(8) : channelId
+    const numericLike = /^\d{6,}$/.test(rawId || userId || '')
+    if (numericLike) {
+      const onebot = botPlatforms.find(p => p.includes('onebot') || p.includes('qq'))
+      if (onebot) return onebot
+    }
+
+    const text = `${channelId || ''} ${userId || ''}`.toLowerCase()
+    if (text.includes('wx') || text.includes('weixin')) {
+      const weixin = botPlatforms.find(p => p.includes('openclaw') || p.includes('weixin'))
+      if (weixin) return weixin
+    }
+
+    return undefined
+  }
+
+  private getOrderedBots(preferredPlatform?: string, strictPreferredPlatform = false): any[] {
+    const bots = Array.from(this.ctx.bots as any[])
+    if (!preferredPlatform) {
+      return bots
+    }
+
+    const preferred = bots.filter(bot => bot.platform === preferredPlatform)
+    if (strictPreferredPlatform) {
+      return preferred
+    }
+
+    const others = bots.filter(bot => bot.platform !== preferredPlatform)
+    return [...preferred, ...others]
+  }
+
+  private getCachedSession(
+    channelId: string,
+    userId?: string,
+    preferredPlatform?: string,
+    allowCrossPlatformFallback = true
+  ): Session | null {
+    const privateChannelId = userId
+      ? (channelId?.startsWith('private:') ? channelId : `private:${userId}`)
+      : undefined
+
+    const tryKeys = (requiredPlatform?: string): Session | null => {
+      const keys: string[] = []
+      if (channelId) keys.push(channelId)
+      if (userId) keys.push(userId)
+      if (privateChannelId) keys.push(privateChannelId)
+
+      for (const key of keys) {
+        const actualKey = requiredPlatform ? this.withPlatformKey(requiredPlatform, key) : key
+        if (!this.sessionCache.has(actualKey)) continue
+        const found = this.sessionCache.get(actualKey) || null
+        if (!found) continue
+        if (requiredPlatform && found.platform !== requiredPlatform) continue
+        return found
+      }
+
+      return null
+    }
+
+    if (preferredPlatform) {
+      const scoped = tryKeys(preferredPlatform)
+      if (scoped) return scoped
+      if (!allowCrossPlatformFallback) return null
+    }
+
+    return tryKeys(undefined)
   }
 }

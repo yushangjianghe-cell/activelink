@@ -22,6 +22,8 @@ export declare class ActiveLinkService extends Service {
         cancelOn?: CancelEvent[];
         condition?: TaskCondition;
         guildId?: string;
+        metadata?: Record<string, any>;
+        platform?: string;
     }): Promise<ActiveLinkTask>;
     cancelTask(taskId: number): Promise<boolean>;
     executeTask(task: ActiveLinkTask): Promise<boolean>;

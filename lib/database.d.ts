@@ -11,6 +11,7 @@ export declare function createActiveLinkTask(ctx: Context, data: {
     tags?: string[];
     cancelOn?: CancelEvent[];
     condition?: TaskCondition;
+    metadata?: Record<string, any>;
     roomId?: number;
 }): Promise<ActiveLinkTask>;
 //# sourceMappingURL=database.d.ts.map

@@ -34,6 +34,7 @@ export async function createActiveLinkTask(
     tags?: string[]
     cancelOn?: CancelEvent[]
     condition?: TaskCondition
+    metadata?: Record<string, any>
     roomId?: number
   }
 ): Promise<ActiveLinkTask> {
@@ -51,7 +52,7 @@ export async function createActiveLinkTask(
     cancelOn: data.cancelOn || [],
     condition: data.condition,
     tags: data.tags || [],
-    metadata: {},
+    metadata: data.metadata || {},
     roomId: data.roomId,
     createdAt: now
   })

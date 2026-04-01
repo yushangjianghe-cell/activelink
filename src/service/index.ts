@@ -45,8 +45,20 @@ export class ActiveLinkService extends Service {
       cancelOn?: CancelEvent[]
       condition?: TaskCondition
       guildId?: string
+      metadata?: Record<string, any>
+      platform?: string
     }
   ) {
+    const inferredPlatform =
+      options?.platform
+      || options?.metadata?.platform
+      || this.chatExecutor.resolvePreferredPlatform(channelId, userId)
+
+    const metadata = {
+      ...(options?.metadata || {}),
+      ...(inferredPlatform ? { platform: inferredPlatform } : {})
+    }
+
     const task = await createActiveLinkTask(this.ctx, {
       userId,
       channelId,
@@ -56,7 +68,8 @@ export class ActiveLinkService extends Service {
       type: options?.type || ActiveLinkTaskType.REMINDER,
       tags: options?.tags || [],
       cancelOn: options?.cancelOn || [],
-      condition: options?.condition
+      condition: options?.condition,
+      metadata
     })
 
     this.ctx.emit('activelink/task-created', task)
